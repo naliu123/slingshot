@@ -1,0 +1,4 @@
+.qa-env/
+.qa-node/
+__pycache__/
+.DS_Store
