@@ -1,89 +1,51 @@
-# Browser verification
+# Verification
 
-`check_game.py` exercises the actual game in Chromium, opening `index.html`
-through `file://`. Python and Playwright are optional test dependencies;
-**playing the game requires neither**.
+Install dependencies with `npm install`, then run:
 
 ```sh
-python3 -m venv .qa-env
-.qa-env/bin/pip install playwright
-.qa-env/bin/playwright install chromium --only-shell
-.qa-env/bin/python qa/check_game.py
-.qa-env/bin/python qa/check_campaign.py
+npm run lint
+npm run typecheck
+npm test
+npm run test:e2e
 ```
 
-Set `CHROME_PATH` to use another installed Chromium executable.
-Screenshots are saved in `qa/artifacts`.
+Browser tests use installed Google Chrome on macOS. Set `CHROME_PATH` to use
+another Chromium executable. Playwright builds and starts the production app
+automatically. When testing an already running production server in CI, use
+`QA_REUSE_SERVER=1 npm run test:e2e`.
 
-Verified on 2026-09-19:
+The tests require a production build because their observer instruments the
+bundled Matter.js module. The observer only exposes the actual engine for
+read-only assertions. It fails explicitly if the expected bundle format changes.
+It does not change health, positions, scores, physics, or victory conditions.
 
-- Mouse drag shows an aim preview and launches a projectile with finite inertia.
-- Impacts destroy blocks, pop pigs, and award score.
-- A full playthrough reaches victory through real drag inputs; a verified
-  two-bird playthrough scored 4,200 with a 1,000-point unused-bird bonus.
-- Four deliberately weak shots reach the loss screen.
-- Reset and replay restore all blocks, three pigs, four birds, and zero score.
-- Arrow keys and Space aim and launch; Escape cancels without spending a bird.
-- Instructions open and close; sound toggles correctly.
-- Personal best survives a reload.
-- 390, 768, 1440, and 1920 pixel layouts have no horizontal overflow.
-- The mobile result screen keeps replay accessible.
-- Native touch drag launches; native touch cancellation preserves the bird.
-- No external network requests or uncaught JavaScript errors.
+`game.spec.cjs` checks the five original layouts, short Canvas aim previews, mouse aiming, finite inertia,
+keyboard controls, aim cancellation, Radix dialogs, paused physics, help from
+Settings, sound, level selection and resume, reset, reload persistence, direct
+`#play/keep` navigation, full-window layouts at 390/768/1920 pixels, native touch
+cancel/launch, all five wins through real mouse inputs, next-level transitions,
+and recoverable loss after four weak shots.
 
-The simulation observer in the test only reads body positions and inertia.
-It selects a surviving pig after the tower collapses and aims a lob using
-mouse input. It does not change score, health, positions, or victory state.
+`pressure.spec.cjs` replaces level data only in the browser response with a
+one-pig fixture. It verifies visible pressure and health loss, crushing-triggered
+victory after the last bird, exactly 1,000 points per pig, no score after death,
+replay clearing pressure, and harmless light contact permitting normal defeat.
+No source files are changed for fixtures.
 
-Regression fixes covered by these checks include a projectile created with
-invalid static-body inertia and upper blocks sleeping after losing support.
+`pig-damage.test.cjs` runs 20 real Matter.js simulations, including stationary
+heavy beams, load transfer through stacks, lateral squeezing, deep pinches,
+impacts and falls, load removal, brief contacts, light debris, tangential motion,
+free fall, pressure at 60/120/240 substeps per second, and passive safety in all
+five original levels.
 
-The five-level expansion adds `check_campaign.py`. It checks the rendered aim
-preview, including its short length, changing angle, and removal on cancellation;
-every level's initial structural stability; switching levels mid-flight;
-resetting the selected level; winning all five layouts through mouse input;
-the next-level buttons and final-level return; per-level bests and saved stars;
-and responsive level selection.
+New screenshots and test output are saved under the system temporary directory.
+Set `QA_ARTIFACTS` to choose a screenshot directory. `qa/artifacts/` contains the
+historical screenshots from the original standalone implementation.
 
-Both scripts use native inputs to play. The campaign observer also records
-Canvas draw calls to measure the visible preview without changing rendering.
-Opening shots target a wooden support, or the upper story of Stonewall Keep;
-later shots aim at surviving pigs. Physics outcomes and scores may vary
-slightly with the tower's settling time.
+The previous Python/file-URL and standalone HTTP checks were replaced by these
+Next.js browser tests.
 
-The expanded campaign was cleared consecutively at 3,800 / 5,400 / 4,800 /
-5,600 / 6,000 points, including next-level transitions and persistence after
-reload. A resize regression was fixed by ignoring temporary zero-sized layouts.
-The final focused check passed recovery from a 1-pixel viewport, 390 / 768 /
-1920-pixel layouts, native touch aim / cancellation / launch, and switching
-levels after a touch launch, with no JavaScript errors.
-
-## Pig damage checks
-
-Run the physics tests with Node.js; no packages need installing:
-
-```sh
-node --test qa/pig-damage.test.cjs
-```
-
-All 20 scenarios passed on 2026-09-20. They simulate actual Matter.js contacts:
-stationary heavy beams, weight transmitted through stacks, lateral squeezing,
-deep geometric pinches, dropped stones, long and tiny falls, removal of a
-load, brief contacts, light debris, tangential motion, and free fall. Pressure
-damage is also compared at 60, 120, and 240 physics steps per second. Every
-original level is tested with damage enabled to rule out passive damage.
-
-Optional browser integration, using an installed Chrome:
-
-```sh
-npm install --prefix .qa-node --no-save --no-package-lock playwright
-NODE_PATH=.qa-node/node_modules node qa/check-pig-ui.cjs
-```
-
-Set `CHROME_PATH` for another Chromium executable. This test checks all five
-real levels, then serves a separate one-pig pressure fixture without changing
-the game's files. Native keyboard input launches the sole bird. Checks passed
-for visible health loss and squashing, crushing-triggered victory, exactly
-1,000 points per pig, no further score after death, replay clearing pressure,
-light contact preserving health while allowing normal defeat, and no JavaScript
-errors. The screenshot is `artifacts/pig-pressure.png`.
+Migration verified on 2026-10-10: production build, ESLint, TypeScript, all
+20 physics scenarios, and all six browser scenarios passed. Development mode
+also passed keyboard aiming, single-shot launch, and modal closing without
+browser errors.

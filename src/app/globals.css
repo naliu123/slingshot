@@ -1,0 +1,120 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Avenir Next", "Avenir", "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+:root {
+  --background: #f7f6f0;
+  --foreground: #303b34;
+  --card: #fdfbf2;
+  --card-foreground: #303b34;
+  --popover: #fdfbf3;
+  --popover-foreground: #303b34;
+  --primary: #dd704d;
+  --primary-foreground: #fffaf0;
+  --secondary: #eeefe4;
+  --secondary-foreground: #303b34;
+  --muted: #eff0e5;
+  --muted-foreground: #828a75;
+  --accent: #e4e8d7;
+  --accent-foreground: #54624b;
+  --destructive: #bf4b39;
+  --border: #e4e4da;
+  --input: #dfe3d2;
+  --ring: #dd704d;
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply m-0 bg-background font-sans text-foreground antialiased; }
+  body[data-page="game"] { overflow: hidden; }
+  button, a { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
+  [hidden] { display: none !important; }
+  kbd {
+    @apply inline-grid h-5 min-w-[18px] place-items-center rounded border border-[#e4e6dc] px-1 font-sans text-[9px] text-[#979c8c] shadow-[0_1px_0_#e5e7dc];
+  }
+}
+
+/* Positions follow the Canvas world projection; the engine updates only these. */
+.game-toolbar {
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: max(20px, env(safe-area-inset-left));
+  right: max(20px, env(safe-area-inset-right));
+}
+.game-brand {
+  top: max(22px, env(safe-area-inset-top));
+  left: max(28px, env(safe-area-inset-left));
+}
+.settings-button {
+  top: max(22px, env(safe-area-inset-top));
+  right: max(28px, env(safe-area-inset-right));
+}
+.score-hud, .birds-hud { top: max(91px, calc(env(safe-area-inset-top) + 68px)); }
+.score-hud { left: max(30px, env(safe-area-inset-left)); }
+.birds-hud { right: max(30px, env(safe-area-inset-right)); }
+.level-hud { top: max(29px, env(safe-area-inset-top)); }
+.wind-label, .scene-sign { bottom: calc(100px + env(safe-area-inset-bottom)); }
+
+@media (max-width: 600px) {
+  .game-brand {
+    top: max(14px, env(safe-area-inset-top));
+    left: max(16px, env(safe-area-inset-left));
+  }
+  .settings-button {
+    top: max(12px, env(safe-area-inset-top));
+    right: max(16px, env(safe-area-inset-right));
+  }
+  .score-hud, .birds-hud { top: max(73px, calc(env(safe-area-inset-top) + 60px)); }
+  .score-hud { left: max(18px, env(safe-area-inset-left)); }
+  .birds-hud { right: max(18px, env(safe-area-inset-right)); }
+  .level-hud { top: max(80px, calc(env(safe-area-inset-top) + 66px)); }
+  .game-toolbar {
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  .wind-label, .scene-sign { bottom: calc(82px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-height: 500px) and (min-width: 601px) {
+  .game-brand, .settings-button { top: max(10px, env(safe-area-inset-top)); }
+  .score-hud, .birds-hud { top: max(60px, calc(env(safe-area-inset-top) + 50px)); }
+  .level-hud { top: max(15px, env(safe-area-inset-top)); }
+  .game-toolbar { min-height: 48px; padding-block: 4px; bottom: max(8px, env(safe-area-inset-bottom)); }
+  .wind-label, .scene-sign { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

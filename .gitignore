@@ -2,3 +2,10 @@
 .qa-node/
 __pycache__/
 .DS_Store
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+playwright-report/
+test-results/
+.trae-html-share-packages/

@@ -1,19 +1,30 @@
 # Slingshot
 
-A five-level, Angry Birds–inspired browser game with original Canvas artwork.
+A five-level, Angry Birds–inspired browser game built with **Next.js App Router,
+React, Tailwind CSS 4, and shadcn/ui**, with original Canvas artwork and Matter.js
+0.20.0 physics.
 
 ## Play
 
-Open **`index.html`** in a modern browser. There is no build step, package
-installation, CDN request, or internet requirement.
-
-If you prefer a local server, run this from the `slingshot` directory:
+Use Node.js 20.9 or later. From the `slingshot` directory:
 
 ```sh
-python3 -m http.server 8765
+npm install
+npm run dev
 ```
 
-Then open <http://localhost:8765>.
+Then open <http://localhost:3000>.
+
+For production:
+
+```sh
+npm run build
+npm run start
+```
+
+The app serves all resources locally. No external image, font, audio, or CDN
+requests are needed during play. It must now run through Next.js rather than
+opening an HTML file directly.
 
 ## Controls
 
@@ -31,7 +42,12 @@ Pop every pig before running out of birds. Wood, stone, and pigs award 100,
 200, and 1,000 points respectively. On a win, each unused bird adds 500 points.
 Clear the level for one star; each level has its own two- and three-star thresholds.
 
-Choose any of the five levels above the playfield. After a win, select **Next
+The game opens on a separate level selection page. Choose any of the five
+levels to enter a playfield that fills the browser window. Open **Settings →
+Choose a level** during play to pick another adventure. **Back to game** returns
+to the current shot without resetting it.
+
+After a win, select **Next
 level** to continue or **Replay** to improve your score. The final level offers
 a return to level 1. Reset always restarts the current level.
 
@@ -44,9 +60,13 @@ a return to level 1. Reset always restarts the current level.
 | Stonewall Keep | Wide fortress with stone footings | 7 | 5 | 6,500 / 8,000 |
 
 Each level's personal best and earned stars are saved in browser storage when
-available. The original game's best score is retained for Greenwood Grove.
+available. The original storage keys are retained, including the legacy best
+score for Greenwood Grove. Storage belongs to the browser origin: scores saved
+under `file://` or a different port are not automatically available at localhost.
 Sound starts muted.
-The How to play dialog pauses gameplay; switching tabs also pauses the game.
+Settings, How to play, and the level selection page pause gameplay; switching
+tabs also pauses the game. The `#levels` and `#play/<level-id>` URL fragments
+support direct navigation and reopening the selected level after a reload.
 
 ## Pig damage
 
@@ -65,13 +85,17 @@ crushing finish before declaring a loss after the last bird.
 
 ## Files
 
-- `index.html` — page, controls, instructions, and result dialog.
-- `styles.css` — responsive layout and interface styling.
-- `levels.js` — five layouts, bird counts, scoring thresholds, and scene palettes.
-- `pig-damage.js` — impact, fall, load, and squeeze detection using solver contacts.
-- `game.js` — fixed-timestep physics, input, scoring, audio, and Canvas drawing.
-- `vendor/matter.min.js` — bundled Matter.js 0.20.0 physics engine.
-- `vendor/LICENSE-matter.txt` — Matter.js MIT license.
+- `src/app/` — App Router entry point, metadata, and Tailwind theme.
+- `src/components/game/` — React level selection, playfield, HUD, and dialogs.
+- `src/components/ui/` — shadcn/ui Button, Card, and Radix-based Dialog.
+- `src/lib/game/levels.js` — layouts, scoring thresholds, and scene palettes.
+- `src/lib/game/pig-damage.js` — independent contact-based damage controller.
+- `src/lib/game/engine.js` — physics, pointer/keyboard input, scoring, audio,
+  Canvas drawing, and a state subscription for React. Its `dispose()` method
+  removes events, observers, animation frames, and audio on unmount.
+- `components.json` — shadcn/ui configuration; add components with
+  `npx shadcn@latest add <component>`.
+- `qa/` — physics and Playwright regression checks.
 
 The physics simulation runs at 120 steps per second, independent of the
 display refresh rate. The aim preview uses the same gravity and air resistance
@@ -83,5 +107,8 @@ impulses, and persistent compression, with thresholds and a short contact grace.
 All scenery and characters are drawn with Canvas. All sounds are synthesized
 with Web Audio. No external image, font, or audio resources are required.
 
-Optional browser checks and verified scenarios are documented in
-[`qa/README.md`](qa/README.md). Screenshots are in `qa/artifacts/`.
+Run `npm run lint`, `npm run typecheck`, `npm test`, and `npm run test:e2e`.
+Browser dependencies and verified scenarios are documented in
+[`qa/README.md`](qa/README.md). New verification screenshots are saved outside
+the project in the temporary `slingshot-qa-artifacts` directory; set
+`QA_ARTIFACTS` to choose another location. Earlier screenshots are in `qa/artifacts/`.

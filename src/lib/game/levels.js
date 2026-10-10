@@ -102,3 +102,5 @@ const SLINGSHOT_LEVELS = [
     pigs: [[1005, 497, 22], [1175, 497, 22], [1010, 359, 22], [1170, 359, 22], [1090, 254, 21]]
   }
 ];
+
+module.exports = SLINGSHOT_LEVELS;
