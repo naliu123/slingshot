@@ -1,29 +1,30 @@
-/* Slingshot — original artwork, local physics, and five unlucky fortresses. */
-(() => {
-  "use strict";
+/* Canvas owns physics and drawing; React owns the interface. */
+import Matter from "matter-js";
+import defaultLevels from "./levels";
+import PigDamage from "./pig-damage";
 
-  const PigDamage = globalThis["PigDamage"];
-  const $ = (id) => document.getElementById(id);
-  if (typeof Matter === "undefined" || typeof SLINGSHOT_LEVELS === "undefined" || typeof PigDamage === "undefined") {
-    $("status-text").textContent = "Game files could not load. Keep all JavaScript files and the vendor folder beside index.html.";
-    return;
-  }
+export function createGame(root, { onChange, levels = defaultLevels }) {
+  const $ = (id) => root.querySelector(`#${id}`);
+  const lifetime = new AbortController();
+  const listen = (target, type, listener) =>
+    target.addEventListener(type, listener, { signal: lifetime.signal });
   const { Engine, Bodies, Body, Composite, Events } = Matter;
   const W = 1440, H = 630, GROUND = 519;
   const SLING = { x: 260, y: 405 };
   const MAX_PULL = 94, LAUNCH_SCALE = 0.205, BIRD_RADIUS = 22;
   const PREVIEW_LENGTH = 280, PREVIEW_SPACING = 28;
-  const LEVELS = SLINGSHOT_LEVELS;
+  const LEVELS = levels;
   let levelIndex = 0, level = LEVELS[0], totalBirds = level.birds;
   const STEP = 1000 / 120;
   const canvas = $("game-canvas"), ctx = canvas.getContext("2d");
   const stage = $("game-stage"), handle = $("bird-handle");
+  if (!ctx) throw new Error("A Canvas 2D context is required to play Slingshot.");
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   // This small scene can keep every body active. Sleeping upper blocks can
   // otherwise remain suspended when the supports beneath them are destroyed.
   const engine = Engine.create({ enableSleeping: false, positionIterations: 8, velocityIterations: 8 });
   engine.gravity.y = 1.1;
-  const view = { scale: 1, offset: 0, height: H };
+  const view = { scale: 1, xOffset: 0, offset: 0, width: W, height: H };
   const colors = {
     ink: "#3c4934", wood: "#dca85f", woodEdge: "#a9763d", woodLight: "#efc582",
     stone: "#a0ada0", stoneEdge: "#788b7f", bird: "#dc6b4c", green: "#9db75f"
@@ -38,6 +39,11 @@
   let best = 0, newRecord = false;
   const progress = Object.fromEntries(LEVELS.map(item => [item.id, { best: 0, stars: 0 }]));
   let lastFrame = 0, accumulator = 0, lastHudScore = -1;
+  let currentPage = "levels", gameStarted = false;
+  let dialog = null, result = null, status = "Your move. Make it fly.";
+  let toastMessage = "", hintVisible = true, powerVisible = false;
+  let frameId = 0, disposed = false, pendingFocus = false, needsResize = false;
+  let lastSnapshot = "";
   try {
     const saved = JSON.parse(localStorage.getItem("slingshot-progress-v2") || "{}");
     for (const item of LEVELS) {
@@ -47,29 +53,39 @@
     }
     const legacyBest = Number(localStorage.getItem("slingshot-best-v1"));
     if (Number.isFinite(legacyBest) && legacyBest > progress.greenwood.best) progress.greenwood.best = legacyBest;
-  } catch (_) { /* Storage is optional. */ }
+  } catch { /* Storage is optional. */ }
 
   const random = (min, max) => min + Math.random() * (max - min);
   const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
   const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
-  function setStatus(message) { $("status-text").textContent = message; }
-  function announce(message) { $("announcer").textContent = message; }
-  function setState(next) { state = next; stage.dataset.state = state; }
+  let announcement = "";
+  function snapshot() {
+    return {
+      page: currentPage, gameStarted, levelIndex, state, score, shots,
+      best, soundOn, dialog, result, status, announcement,
+      hintVisible, powerVisible,
+      power: Math.round(Math.hypot(pull.x, pull.y) / MAX_PULL * 100),
+      toast: toastMessage, toastVisible: Boolean(toastUntil),
+      targets: pigs.filter(p => !p.game.destroyed).length,
+      progress: Object.fromEntries(Object.entries(progress).map(([id, record]) => [id, { ...record }])),
+    };
+  }
+  function publish() {
+    if (disposed) return;
+    const next = snapshot(), serialized = JSON.stringify(next);
+    if (serialized !== lastSnapshot) {
+      lastSnapshot = serialized;
+      onChange(next);
+    }
+  }
+  function setStatus(message) { status = message; publish(); }
+  function announce(message) { announcement = message; publish(); }
+  function setState(next) { state = next; publish(); }
   function saveProgress() {
-    try { localStorage.setItem("slingshot-progress-v2", JSON.stringify(progress)); } catch (_) { /* Optional. */ }
+    try { localStorage.setItem("slingshot-progress-v2", JSON.stringify(progress)); } catch { /* Optional. */ }
   }
-  function updateLevelPicker() {
-    document.querySelectorAll(".level-choice").forEach((button, index) => {
-      const item = LEVELS[index], record = progress[item.id];
-      button.setAttribute("aria-pressed", String(index === levelIndex));
-      button.setAttribute("aria-label", `Level ${index + 1}: ${item.name}. ${item.birds} birds, ${item.pigs.length} targets. ${record.stars} of 3 stars.`);
-      button.classList.toggle("cleared", record.stars > 0);
-      button.querySelector(".level-choice-stars").textContent = "★".repeat(record.stars) + "☆".repeat(3 - record.stars);
-    });
-    const records = Object.values(progress);
-    $("campaign-progress").textContent = `${records.filter(record => record.stars > 0).length} / ${LEVELS.length} cleared · ${records.reduce((sum, record) => sum + record.stars, 0)} / ${LEVELS.length * 3} stars`;
-  }
+  function updateLevelPicker() { publish(); }
   function selectLevel(index) {
     if (!Number.isInteger(index) || index < 0 || index >= LEVELS.length) return;
     cancelAim();
@@ -77,31 +93,59 @@
     level = LEVELS[index];
     totalBirds = level.birds;
     reset();
-    handle.focus({ preventScroll: true });
+    showGame();
+    const route = `#play/${level.id}`;
+    if (location.hash !== route) location.hash = route;
+  }
+  function resetFrameClock() {
+    lastFrame = 0;
+    accumulator = 0;
+  }
+  function focusGame() {
+    (state === "won" ? $("next-level") : state === "lost" ? $("play-again") : loadedBird ? handle : $("settings-open")).focus({ preventScroll: true });
+  }
+  function showGame() {
+    currentPage = "game";
+    gameStarted = true;
+    resetFrameClock();
+    needsResize = true;
+    pendingFocus = true;
+    publish();
+  }
+  function showLevels() {
+    cancelAim();
+    dialog = null;
+    currentPage = "levels";
+    resetFrameClock();
+    updateLevelPicker();
+    window.scrollTo(0, 0);
+    pendingFocus = true;
+  }
+  function openLevels() {
+    if (location.hash === "#levels") showLevels();
+    else location.hash = "#levels";
+  }
+  function resumeGame() {
+    location.hash = `#play/${level.id}`;
+  }
+  function syncPage() {
+    const match = /^#play\/([a-z]+)$/.exec(location.hash);
+    const index = match ? LEVELS.findIndex(item => item.id === match[1]) : -1;
+    if (index >= 0) {
+      if (index !== levelIndex) selectLevel(index);
+      else showGame();
+    } else {
+      showLevels();
+    }
   }
   function updateLevelLabels() {
-    const number = String(levelIndex + 1).padStart(2, "0");
-    stage.dataset.level = String(levelIndex + 1);
-    $("level-number").textContent = number;
-    $("level-chapter").textContent = level.chapter;
-    $("level-name").textContent = level.name;
-    $("level-tip").textContent = level.tip;
-    document.querySelectorAll(".level-difficulty > i").forEach((mark, index) => mark.classList.toggle("empty", index >= level.difficulty));
-    $("hud-level").textContent = `LEVEL ${number} / ${LEVELS.length}`;
-    $("scene-name").textContent = level.name.toUpperCase();
-    $("help-birds").textContent = `${totalBirds} birds`;
-    $("help-pigs").textContent = `${level.pigs.length} green pigs`;
-    $("star-guide").textContent = `Pop every pig to win. Earn ★★ at ${level.stars[0].toLocaleString("en-US")} points and ★★★ at ${level.stars[1].toLocaleString("en-US")} points.`;
-    canvas.setAttribute("aria-label", `${level.name}. ${totalBirds} birds and ${level.pigs.length} green targets. Drag the bird backward and release to launch.`);
-    $("bird-slots").innerHTML = Array.from({ length: totalBirds }, () => '<svg class="bird-slot" aria-hidden="true"><use href="#icon-bird"/></svg>').join("");
     best = progress[level.id].best;
-    $("best-score").textContent = best.toLocaleString("en-US");
     updateLevelPicker();
   }
   function toast(message, duration = 1.7) {
-    $("shot-toast").textContent = message;
-    $("shot-toast").classList.add("show");
+    toastMessage = message;
     toastUntil = gameTime + duration;
+    publish();
   }
 
   function sound(kind) {
@@ -126,16 +170,13 @@
         oscillator.start(start);
         oscillator.stop(start + 0.22);
       });
-    } catch (_) { /* Play remains available without Web Audio. */ }
+    } catch { /* Play remains available without Web Audio. */ }
   }
 
   function toggleSound() {
     soundOn = !soundOn;
-    $("sound-toggle").setAttribute("aria-pressed", String(soundOn));
-    $("sound-toggle").setAttribute("aria-label", soundOn ? "Turn sound off" : "Turn sound on");
-    $("sound-toggle").title = `${soundOn ? "Turn sound off" : "Turn sound on"} (M)`;
-    $("sound-icon").firstElementChild.setAttribute("href", soundOn ? "#icon-volume" : "#icon-muted");
     if (soundOn) sound("pull");
+    publish();
   }
 
   function addBlock(x, y, width, height, material = "wood") {
@@ -180,11 +221,10 @@
     birds.push(loadedBird);
     Composite.add(engine.world, loadedBird);
     pull = { x: 0, y: 0 };
-    handle.hidden = false;
     positionHandle();
     setState("ready");
     setStatus(shots === 0 ? "Your move. Make it fly." : `${totalBirds - shots} ${totalBirds - shots === 1 ? "bird" : "birds"} left. You’ve got this.`);
-    $("aim-hint").hidden = shots > 0;
+    hintVisible = shots === 0;
     announce(`${level.name}. ${totalBirds - shots} birds available. ${pigs.filter(p => !p.game.destroyed).length} targets left.`);
   }
 
@@ -199,10 +239,9 @@
     pendingFinish = null; shake = 0; toastUntil = 0; resetTime = 0;
     newRecord = false; keyboardAim = false; aimAngle = 32; aimPower = 82;
     accumulator = 0; lastHudScore = -1; lastImpactSound = -100;
-    $("result-overlay").hidden = true;
-    $("shot-toast").classList.remove("show");
-    $("power-readout").hidden = true;
-    $("aim-hint").hidden = false;
+    result = null;
+    powerVisible = false;
+    hintVisible = true;
     updateLevelLabels();
     const ground = Bodies.rectangle(W / 2, GROUND + 80, W + 1200, 160, {
       isStatic: true, label: "ground", friction: 0.85, restitution: 0.12
@@ -220,24 +259,20 @@
     for (let i = 0; i < 100; i++) Engine.update(engine, STEP);
     loadBird();
     updateHud();
+    pendingFocus = true;
   }
 
   function updateHud() {
     if (score !== lastHudScore) {
-      $("score").textContent = String(score).padStart(5, "0");
       lastHudScore = score;
       if (score > best) {
         best = score;
         newRecord = true;
-        $("best-score").textContent = best.toLocaleString("en-US");
         progress[level.id].best = best;
         saveProgress();
       }
     }
-    const left = pigs.filter(p => !p.game.destroyed).length;
-    $("target-count").textContent = `${left} ${left === 1 ? "target" : "targets"} left`;
-    $("bird-slots").setAttribute("aria-label", `${totalBirds - shots} ${totalBirds - shots === 1 ? "bird" : "birds"} remaining`);
-    document.querySelectorAll(".bird-slot").forEach((node, index) => node.classList.toggle("used", index < shots));
+    publish();
   }
 
   function burst(x, y, color, count = 12, force = 1) {
@@ -317,13 +352,16 @@
 
   function positionHandle() {
     if (!loadedBird) return;
-    handle.style.left = `calc(${loadedBird.position.x / W * 100}% - 30px)`;
-    handle.style.top = `calc(${(loadedBird.position.y + view.offset) / view.height * 100}% - 30px)`;
+    handle.style.left = `${(loadedBird.position.x + view.xOffset) * view.scale - 30}px`;
+    handle.style.top = `${(loadedBird.position.y + view.offset) * view.scale - 30}px`;
   }
 
   function getPoint(event) {
     const rect = canvas.getBoundingClientRect();
-    return { x: (event.clientX - rect.left) / view.scale, y: (event.clientY - rect.top) / view.scale - view.offset };
+    return {
+      x: (event.clientX - rect.left) / view.scale - view.xOffset,
+      y: (event.clientY - rect.top) / view.scale - view.offset
+    };
   }
 
   function updateAim(point) {
@@ -335,29 +373,28 @@
     if (length > MAX_PULL) { dx *= MAX_PULL / length; dy *= MAX_PULL / length; }
     pull = { x: dx, y: dy };
     Body.setPosition(loadedBird, { x: SLING.x + dx, y: SLING.y + dy });
-    const power = Math.round(Math.hypot(dx, dy) / MAX_PULL * 100);
-    $("power-fill").style.width = `${power}%`;
-    $("power-value").textContent = `${power}%`;
-    $("power-readout").hidden = false;
-    $("aim-hint").hidden = true;
+    powerVisible = true;
+    hintVisible = false;
     positionHandle();
+    publish();
   }
 
   function cancelAim() {
     if (pointerId !== null) {
-      try { if (stage.hasPointerCapture(pointerId)) stage.releasePointerCapture(pointerId); } catch (_) { }
+      try { if (stage.hasPointerCapture(pointerId)) stage.releasePointerCapture(pointerId); } catch { }
       pointerId = null;
     }
     keyboardAim = false;
     pull = { x: 0, y: 0 };
-    $("power-readout").hidden = true;
+    powerVisible = false;
     if (state === "aiming" && loadedBird) {
       Body.setPosition(loadedBird, SLING);
       setState("ready");
       setStatus("Your move. Make it fly.");
-      $("aim-hint").hidden = shots > 0;
+      hintVisible = shots === 0;
       positionHandle();
     }
+    publish();
   }
 
   function launch() {
@@ -374,9 +411,8 @@
     stableTime = 0;
     resetTime = 0;
     trail = [];
-    handle.hidden = true;
-    $("power-readout").hidden = true;
-    $("aim-hint").hidden = true;
+    powerVisible = false;
+    hintVisible = false;
     setState("flying");
     setStatus("A little bird. A lot of momentum.");
     sound("launch");
@@ -385,8 +421,10 @@
     updateHud();
   }
 
-  stage.addEventListener("pointerdown", (event) => {
-    if (!["ready", "aiming"].includes(state) || !loadedBird || pointerId !== null || event.button !== 0 || event.target.closest("#result-overlay")) return;
+  listen(stage, "pointerdown", (event) => {
+    if (currentPage !== "game" || dialog ||
+        !["ready", "aiming"].includes(state) || !loadedBird || pointerId !== null || event.button !== 0 ||
+        (event.target !== handle && event.target.closest("button, a, #result-overlay, .game-toolbar"))) return;
     const point = getPoint(event);
     if (event.target !== handle && distance(point, loadedBird.position) > Math.max(40, 31 / view.scale)) return;
     event.preventDefault();
@@ -397,20 +435,20 @@
     setStatus("Find your angle. Release to fly.");
     sound("pull");
   });
-  stage.addEventListener("pointermove", (event) => {
+  listen(stage, "pointermove", (event) => {
     if (state !== "aiming" || event.pointerId !== pointerId || !loadedBird) return;
     event.preventDefault();
     updateAim(getPoint(event));
   });
-  stage.addEventListener("pointerup", (event) => {
+  listen(stage, "pointerup", (event) => {
     if (event.pointerId !== pointerId) return;
     pointerId = null;
     if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
     launch();
   });
-  stage.addEventListener("pointercancel", cancelAim);
-  stage.addEventListener("lostpointercapture", () => { if (pointerId !== null) cancelAim(); });
-  window.addEventListener("blur", cancelAim);
+  listen(stage, "pointercancel", cancelAim);
+  listen(stage, "lostpointercapture", () => { if (pointerId !== null) cancelAim(); });
+  listen(window, "blur", cancelAim);
 
   function applyKeyboardAim() {
     const angle = aimAngle * Math.PI / 180, power = aimPower / 100 * MAX_PULL;
@@ -420,11 +458,11 @@
     setStatus(`${aimAngle}° angle · ${aimPower}% power. Space to launch.`);
   }
 
-  document.addEventListener("keydown", (event) => {
-    if ($("help-dialog").open) return;
+  listen(document, "keydown", (event) => {
+    if (currentPage !== "game" || dialog) return;
     if (event.altKey || event.ctrlKey || event.metaKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
     const key = event.key.toLowerCase();
-    if (key === "r") { event.preventDefault(); reset(); handle.focus({ preventScroll: true }); return; }
+    if (key === "r") { event.preventDefault(); reset(); return; }
     if (key === "m") { event.preventDefault(); toggleSound(); return; }
     if (key === "escape") { cancelAim(); return; }
     if (event.target.closest("button, a") && event.target !== handle && (key === " " || key === "enter")) return;
@@ -447,8 +485,7 @@
   function finish(won) {
     cancelAim();
     setState(won ? "won" : "lost");
-    handle.hidden = true;
-    $("aim-hint").hidden = true;
+    hintVisible = false;
     const unused = totalBirds - shots;
     const bonus = won ? unused * 500 : 0;
     score += bonus;
@@ -461,20 +498,17 @@
     }
     const lastLevel = levelIndex === LEVELS.length - 1;
     const allCleared = Object.values(progress).every(record => record.stars > 0);
-    $("result-eyebrow").textContent = won ? (newRecord ? "A NEW PERSONAL BEST" : `${level.name.toUpperCase()} · CLEARED`) : "A LITTLE PRACTICE GOES A LONG WAY";
-    $("result-title").textContent = won ? (allCleared ? "Five flings of glory." : "Beautiful chaos.") : "Another shot at glory?";
-    $("result-description").textContent = won ? (allCleared ? "All five levels cleared. Come back for every last star." : `${level.name} cleared. ${lastLevel ? "Try the other levels or chase three stars." : `Up next: ${LEVELS[levelIndex + 1].name}.`}`) : `${pigs.filter(p => !p.game.destroyed).length} targets survived. ${level.tip}`;
-    $("result-stars").innerHTML = [0, 1, 2].map(i => `<svg class="${i < stars ? "earned" : ""}" aria-hidden="true"><use href="#icon-star"/></svg>`).join("");
-    $("result-stars").setAttribute("aria-label", `${stars} of 3 stars`);
-    $("final-score").textContent = score.toLocaleString("en-US");
-    $("result-breakdown").textContent = won ? `Includes ${bonus.toLocaleString("en-US")} bonus points for ${unused} unused ${unused === 1 ? "bird" : "birds"}` : "Fresh birds. Fresh tower. You’ve got this.";
-    $("next-level").hidden = !won;
-    $("next-level-label").textContent = lastLevel ? "Back to level 1" : "Next level";
-    $("play-again").textContent = won ? "Replay" : "Try again";
-    $("result-overlay").hidden = false;
+    result = {
+      won, stars,
+      eyebrow: won ? (newRecord ? "A NEW PERSONAL BEST" : `${level.name.toUpperCase()} · CLEARED`) : "A LITTLE PRACTICE GOES A LONG WAY",
+      title: won ? (allCleared ? "Five flings of glory." : "Beautiful chaos.") : "Another shot at glory?",
+      description: won ? (allCleared ? "All five levels cleared. Come back for every last star." : `${level.name} cleared. ${lastLevel ? "Try the other levels or chase three stars." : `Up next: ${LEVELS[levelIndex + 1].name}.`}`) : `${pigs.filter(p => !p.game.destroyed).length} targets survived. ${level.tip}`,
+      breakdown: won ? `Includes ${bonus.toLocaleString("en-US")} bonus points for ${unused} unused ${unused === 1 ? "bird" : "birds"}` : "Fresh birds. Fresh tower. You’ve got this.",
+      nextLabel: lastLevel ? "Back to level 1" : "Next level",
+    };
     setStatus(won ? "Level cleared. Nicely flung." : "Out of birds. Time for a fresh start.");
     announce(`${won ? "Level cleared" : "Out of birds"}. Final score ${score}. ${stars} stars.`);
-    $(won ? "next-level" : "play-again").focus({ preventScroll: true });
+    pendingFocus = true;
     if (won) {
       sound("win");
       if (!reducedMotion) {
@@ -487,8 +521,8 @@
     gameTime += dt;
     Engine.update(engine, STEP);
     if (toastUntil && gameTime > toastUntil) {
-      $("shot-toast").classList.remove("show");
       toastUntil = 0;
+      publish();
     }
     if (shots > 0 && !["won", "lost"].includes(state)) {
       for (const body of [...blocks, ...pigs]) {
@@ -496,7 +530,6 @@
       }
       if (pigs.every(p => p.game.destroyed) && (!pendingFinish || !pendingFinish.won)) {
         pendingFinish = { won: true, at: gameTime + 1.8 };
-        handle.hidden = true;
         if (loadedBird) {
           Composite.remove(engine.world, loadedBird);
           loadedBird = null;
@@ -595,10 +628,11 @@
 
   function drawBackground() {
     const top = -view.offset, bottom = view.height - view.offset;
+    const left = -view.xOffset, right = W + view.xOffset;
     const palette = level.palette;
     const sky = ctx.createLinearGradient(0, top, 0, GROUND);
     sky.addColorStop(0, palette.sky[0]); sky.addColorStop(0.65, palette.sky[1]); sky.addColorStop(1, palette.sky[2]);
-    ctx.fillStyle = sky; ctx.fillRect(0, top, W, view.height);
+    ctx.fillStyle = sky; ctx.fillRect(left, top, view.width, view.height);
 
     const sunY = 146 - view.offset * 0.12;
     ellipse(1219, sunY, 67, 67, palette.sun);
@@ -610,15 +644,15 @@
     cloud(80 + drift * 0.3, 227, 0.46);
 
     ctx.fillStyle = palette.hills[0]; ctx.beginPath();
-    ctx.moveTo(0, 383); ctx.bezierCurveTo(180, 310, 258, 425, 420, 349);
+    ctx.moveTo(left, 383); ctx.bezierCurveTo(180, 310, 258, 425, 420, 349);
     ctx.bezierCurveTo(621, 246, 683, 265, 857, 365);
     ctx.bezierCurveTo(1045, 405, 1160, 255, 1440, 315);
-    ctx.lineTo(W, GROUND); ctx.lineTo(0, GROUND); ctx.fill();
+    ctx.lineTo(right, 315); ctx.lineTo(right, GROUND); ctx.lineTo(left, GROUND); ctx.fill();
     ctx.fillStyle = palette.hills[1]; ctx.beginPath();
-    ctx.moveTo(0, 404); ctx.bezierCurveTo(230, 350, 402, 421, 597, 391);
+    ctx.moveTo(left, 404); ctx.bezierCurveTo(230, 350, 402, 421, 597, 391);
     ctx.bezierCurveTo(825, 341, 904, 347, 1119, 410);
     ctx.bezierCurveTo(1258, 430, 1330, 380, W, 386);
-    ctx.lineTo(W, GROUND); ctx.lineTo(0, GROUND); ctx.fill();
+    ctx.lineTo(right, 386); ctx.lineTo(right, GROUND); ctx.lineTo(left, GROUND); ctx.fill();
 
     tree(48, 465, 151, "#a8bf97");
     tree(128, 462, 104, "#b0c599", 1);
@@ -627,15 +661,15 @@
     tree(1320, 464, 177, "#a9bd8d");
     tree(1380, 465, 127, "#b2c599", 1);
     ctx.fillStyle = "#b5c998"; ctx.beginPath();
-    ctx.moveTo(0, 467); ctx.bezierCurveTo(224, 440, 331, 476, 520, 462);
+    ctx.moveTo(left, 467); ctx.bezierCurveTo(224, 440, 331, 476, 520, 462);
     ctx.bezierCurveTo(719, 445, 937, 483, 1090, 465);
     ctx.bezierCurveTo(1247, 442, 1350, 458, W, 443);
-    ctx.lineTo(W, GROUND + 5); ctx.lineTo(0, GROUND + 5); ctx.fill();
+    ctx.lineTo(right, 443); ctx.lineTo(right, GROUND + 5); ctx.lineTo(left, GROUND + 5); ctx.fill();
 
     // Gentle foreground terrain, with a level top for predictable physics.
-    ctx.fillStyle = palette.earth; ctx.fillRect(0, GROUND, W, bottom - GROUND);
-    ctx.fillStyle = "#abc385"; ctx.fillRect(0, GROUND - 5, W, 7);
-    ctx.fillStyle = "#cad29e"; ctx.fillRect(0, GROUND + 2, W, 4);
+    ctx.fillStyle = palette.earth; ctx.fillRect(left, GROUND, view.width, bottom - GROUND);
+    ctx.fillStyle = "#abc385"; ctx.fillRect(left, GROUND - 5, view.width, 7);
+    ctx.fillStyle = "#cad29e"; ctx.fillRect(left, GROUND + 2, view.width, 4);
     ctx.fillStyle = "#b9c58e";
     for (let i = 0; i < 40; i++) {
       const x = (i * 173 + 49) % W, y = GROUND + 24 + (i * 37) % 68;
@@ -809,7 +843,7 @@
 
   function draw() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, 0, view.offset * view.scale * dpr);
+    ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.xOffset * view.scale * dpr, view.offset * view.scale * dpr);
     drawBackground();
     ctx.save();
     if (shake > 0.2 && !reducedMotion) ctx.translate(random(-shake, shake), random(-shake, shake) * 0.5);
@@ -863,57 +897,79 @@
     const width = Math.round(rect.width * dpr), height = Math.round(rect.height * dpr);
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
-    view.scale = rect.width / W;
+    // Fit the entire physics world without stretching or cropping on wide screens.
+    view.scale = Math.min(rect.width / W, rect.height / H);
+    view.width = rect.width / view.scale;
+    view.xOffset = Math.max(0, view.width - W) / 2;
     view.height = rect.height / view.scale;
-    view.offset = Math.max(0, view.height - H) * 0.64;
+    view.offset = Math.max(0, view.height - H) * 0.52;
+    $("aim-hint").style.left = `${(SLING.x + 55 + view.xOffset) * view.scale}px`;
+    $("aim-hint").style.top = `${(SLING.y - 40 + view.offset) * view.scale}px`;
+    $("power-readout").style.left = `${Math.max(8, (SLING.x - 100 + view.xOffset) * view.scale)}px`;
+    $("power-readout").style.top = `${(SLING.y - 115 + view.offset) * view.scale}px`;
     positionHandle();
     draw();
   }
 
   function frame(timestamp) {
+    if (disposed) return;
+    if (needsResize && stage.getBoundingClientRect().width > 0) {
+      needsResize = false;
+      resize();
+    }
+    if (pendingFocus && !dialog) {
+      const page = $(currentPage === "game" ? "game-page" : "levels-page");
+      if (!page.hidden && (!result || $("result-overlay")?.hidden === false)) {
+        pendingFocus = false;
+        if (currentPage === "game") focusGame();
+        else $("page-title").focus({ preventScroll: true });
+      }
+    }
     if (!lastFrame) lastFrame = timestamp;
     const elapsed = Math.min((timestamp - lastFrame) / 1000, 0.05);
     lastFrame = timestamp;
-    if (!document.hidden && !$("help-dialog").open) {
+    if (!document.hidden && currentPage === "game" && !dialog) {
       accumulator += elapsed;
       while (accumulator >= STEP / 1000) {
         simulate(STEP / 1000);
         accumulator -= STEP / 1000;
       }
     }
-    draw();
-    requestAnimationFrame(frame);
+    if (currentPage === "game") draw();
+    frameId = requestAnimationFrame(frame);
   }
 
-  $("reset-button").addEventListener("click", () => { reset(); handle.focus({ preventScroll: true }); });
-  $("play-again").addEventListener("click", () => { reset(); handle.focus({ preventScroll: true }); });
-  $("next-level").addEventListener("click", () => {
-    if (state === "won") selectLevel((levelIndex + 1) % LEVELS.length);
-  });
-  $("level-picker").innerHTML = LEVELS.map((item, index) =>
-    `<button class="level-choice" data-level-index="${index}" aria-pressed="false">
-      <span class="level-choice-number">${String(index + 1).padStart(2, "0")}</span>
-      <span class="level-choice-copy"><strong>${item.name}</strong><span>${item.birds} birds · ${item.pigs.length} targets</span></span>
-      <span class="level-choice-stars" aria-hidden="true">☆☆☆</span>
-    </button>`).join("");
-  $("level-picker").addEventListener("click", (event) => {
-    const button = event.target.closest(".level-choice");
-    if (button) selectLevel(Number(button.dataset.levelIndex));
-  });
-  $("sound-toggle").addEventListener("click", toggleSound);
-  $("how-to-open").addEventListener("click", () => { cancelAim(); $("help-dialog").showModal(); });
-  $("how-to-close").addEventListener("click", () => $("help-dialog").close());
-  $("lets-play").addEventListener("click", () => $("help-dialog").close());
-  $("help-dialog").addEventListener("click", event => {
-    if (event.target !== $("help-dialog")) return;
-    const rect = event.target.getBoundingClientRect();
-    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close();
-  });
-  document.addEventListener("visibilitychange", () => { lastFrame = 0; accumulator = 0; if (document.hidden) cancelAim(); });
-  canvas.addEventListener("contextrestored", resize);
-  new ResizeObserver(resize).observe(stage);
+  function setDialog(next) {
+    cancelAim();
+    dialog = next;
+    resetFrameClock();
+    if (!next && currentPage === "game") pendingFocus = true;
+    publish();
+  }
+  listen(document, "visibilitychange", () => { resetFrameClock(); if (document.hidden) cancelAim(); });
+  listen(canvas, "contextrestored", resize);
+  listen(window, "hashchange", syncPage);
+  const observer = new ResizeObserver(resize);
+  observer.observe(stage);
 
   reset();
-  resize();
-  requestAnimationFrame(frame);
-})();
+  syncPage();
+  frameId = requestAnimationFrame(frame);
+  return {
+    selectLevel, openLevels, resumeGame, toggleSound, setDialog,
+    reset() { reset(); pendingFocus = true; publish(); },
+    nextLevel() { if (state === "won") selectLevel((levelIndex + 1) % LEVELS.length); },
+    dispose() {
+      cancelAim();
+      disposed = true;
+      cancelAnimationFrame(frameId);
+      lifetime.abort();
+      observer.disconnect();
+      pigDamage.dispose();
+      Events.off(engine);
+      Composite.clear(engine.world, false);
+      Engine.clear(engine);
+      if (audio) void audio.close();
+    },
+  };
+}

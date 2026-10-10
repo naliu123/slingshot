@@ -1,11 +1,8 @@
 /* Real Matter.js simulations. Run: node --test qa/pig-damage.test.cjs */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const vm = require("node:vm");
-const path = require("node:path");
-const Matter = require("../vendor/matter.min.js");
-const PigDamage = require("../pig-damage.js");
+const Matter = require("matter-js");
+const PigDamage = require("../src/lib/game/pig-damage.js");
 const { Engine, Bodies, Body, Composite, Events } = Matter;
 
 function scene(step = 1000 / 120) {
@@ -200,10 +197,8 @@ test("disabled damage and reset discard pending pressure", () => {
   assert.equal(pig.game.hp, 24);
 });
 
-const sandbox = {};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../levels.js"), "utf8") +
-  "\nthis.levels = SLINGSHOT_LEVELS;", sandbox);
-for (const level of sandbox.levels) {
+const levels = require("../src/lib/game/levels.js");
+for (const level of levels) {
   test(`${level.name}: original structure cannot crush pigs by itself after a missed shot`, () => {
     const s = scene();
     for (const [x, y, w, h, material] of level.blocks) {
